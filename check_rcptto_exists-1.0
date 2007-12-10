@@ -1,0 +1,74 @@
+# check_rcptto_exists Version 1.0 by Marc Sebastian Pelzer
+#
+# This plugin check wether a recipient of an incoming email exists in our local virtual-domains alias
+# configuration file(s).
+# The path to the alias file is hard-coded into this plug-in and you may need to modify it a bit in
+# order to fit your set-up. Should not be a big problem if you know Perl :)
+#
+# You should create a config-file called "config/relayclients" which should contain a (maybe dynamically created)
+# list of IP's or hostnames which are white-listed from this plug-in. It is recommended to put your relay-client's
+# IP's inside this file, otherwise all outgoing connections will be rejected because the recipient of the outgoing
+# mail is not locally known. 
+#
+# Fell free to change that behaviour as you like and to use this plug-in as an example for your own alias check.
+#
+use Qpsmtpd::DSN;
+
+sub hook_rcpt {
+
+  my ($self, $transaction, $recipient) = @_;
+  my ($line, $user, $tmp);
+
+  my $userExists = 0;
+
+  my $remote_ip = $self->qp->connection->remote_ip;
+  my $remote_host = $self->qp->connection->remote_host;
+
+  # relayclients can send email to whoever thay want
+  #
+  my @relayclients = $self->qp->config("relayclients");
+  
+  foreach $tmp (@relayclients) {
+
+    if ($remote_host =~ m!$tmp! || $remote_ip =~ m!$tmp!) {
+
+        $self->log(LOGNOTICE, "Ok - remote peer is a allowed RELAY client ($remote_host / $remote_ip)");
+        return DECLINED;
+    }
+  }
+
+  return (DECLINED) unless $recipient->host && $recipient->user;
+
+  my $host = lc $recipient->host;
+  my $from = lc($recipient->user) . '@' . $host;
+
+  unless (-e "/opt/local/exim/virtual-domains/$host") { return Qpsmtpd::DSN->no_such_user("mail to $from not accepted here"); }
+
+  open (EXIM, "/opt/local/exim/virtual-domains/$host");
+
+  while ($line = <EXIM>) {
+
+    chomp($line);
+
+    if ($line =~ m!^\s*\#! || $line =~ m!^\n$! || ! $line) { next; }
+
+    ($user) = ($line =~ m!^\s*([^\:\s]+)\:!);
+
+    if ($user && lc($user) eq lc($recipient->user)) { ++$userExists; }
+  }
+
+  close (EXIM);
+
+  if ($userExists < 1) {
+
+      $self->log(LOGNOTICE, "Recipient '$from' does not exists here. Slowing down spammer ...");
+
+      sleep 60;     # slow down spammer
+
+      return Qpsmtpd::DSN->no_such_user("mail to $from not accepted here");
+  }
+
+  $self->log(LOGNOTICE, "OK, recipient '$from' exists. Allowing to pass through ...");
+
+  return (DECLINED);
+}
